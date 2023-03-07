@@ -1,0 +1,149 @@
+---
+title: "NYPD Shooting Incident Data Report"
+output:
+  pdf_document: default
+date: "2023-02-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, message=FALSE}
+
+library(tidyverse)
+library(lubridate)
+```
+
+
+## Getting the data
+
+We first get the raw data from the following link: 
+"https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+
+
+```{r get_NYPD_Shooting_Data, message=FALSE}
+urlData <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypd_raw <- read_csv(urlData)
+
+```
+
+
+
+
+## Tidying and Transforming the Data
+
+Several columns can be taken into account to draw any type of analysis. 
+For my analysis, I will look at the shooting trend on a yearly basis while keeping the different NYC boroughs into consideration.
+Because we are only focusing on year of event and borough, we can remove most of the unnecessary columns for this analysis.
+
+```{r transformin_rawData, message=FALSE}
+nypd_tr<- nypd_raw %>% 
+  mutate(Year = as.integer(substr(OCCUR_DATE,nchar(OCCUR_DATE)-3,nchar(OCCUR_DATE)))) %>% 
+  select(Year, BORO)
+
+summarized_byBORO <- nypd_tr %>% 
+    group_by(Year,BORO) %>%
+    summarize(shootings = n()) %>%
+    pivot_wider(names_from = BORO,values_from = shootings)%>%
+    ungroup() %>%
+    mutate(TOTAL = rowSums(across(-Year)))
+
+nypd_perHour <- nypd_raw %>% 
+     mutate(Hour = hour(OCCUR_TIME) ) %>%
+     select(Hour) %>%
+     group_by(Hour)%>%
+     summarize(Shootings = n()) %>%
+     ungroup()
+nypd_perHour_prop <- nypd_perHour %>%
+     mutate(Prop_Shootings = Shootings/sum(Shootings)*100)
+```
+
+
+## Visualizations and Analysis
+
+
+```{r vis_analysis, message=FALSE}
+grouped_nypd_tr <- nypd_tr %>% 
+  group_by(Year,BORO) %>%
+  summarize(shootings = n())
+
+nypd_wide <- nypd_tr %>% 
+    group_by(Year,BORO) %>%
+    summarize(shootings = n()) %>%
+    pivot_wider(names_from = BORO,values_from = shootings)
+
+nypd_wide
+
+ggplot(grouped_nypd_tr, aes(x=Year, y=shootings, fill=BORO)) + 
+    geom_bar(stat="identity") +
+    labs(title="Number of Shootings by Borough and Year") +
+    xlab("Year") + ylab("Number of Shootings") +
+    scale_fill_manual(values=c("brown", "cadetblue3", "dodgerblue3", "chartreuse3", "darkgoldenrod2")) +
+    theme_classic()
+
+grouped_nypd_tr %>% ggplot(aes(x="", y=shootings, fill=BORO)) +
+    geom_bar(stat="identity", width=1) +
+    coord_polar("y", start=0) +
+    labs(title="Total Shootings per borough from 2006 to 2021") +
+    scale_fill_manual(values=c("brown", "cadetblue3", "dodgerblue3", "chartreuse3", "darkgoldenrod2"))
+
+ggplot(nypd_perHour_prop , aes(x=Hour, y = Prop_Shootings))+
+     geom_bar(stat="identity", fill = "blue")+
+     labs(title="%Shootings by Hour", x="Hour", y="Percentage of Shootings")
+
+nypd_perHour_prop_10 <-nypd_perHour_prop[nypd_perHour_prop$Hour>8,]
+ggplot(nypd_perHour_prop_10  , aes(x=Hour, y = Prop_Shootings))+
+     geom_bar(stat="identity", fill = "blue")+
+     labs(title="%Shootings by Hour", x="Hour", y="Percentage of Shootings")
+
+
+
+```
+
+We can see clearly that some boroughs have more shooting incidents than others. The proportion of shooting incidents per borough over the years seems to be constant as well. 
+We can also notice a steady decrease from 2006 to 2019 and a sharp increase in year 2020.
+The COVID pandemic and the lockdowns it caused might have played a role in this sudden increase of violence in 2020. If this is the case, we might experience a decrease from 2022 onward as it stabilizes around the shooting rates prior to year 2020. 
+Since the proportions seem to be stable, we will try to build a model that predicts the amount of shooting events per borough on a given year based on the year total. 
+
+
+
+
+## Modelling Data
+
+```{r modeling, message=FALSE}
+merged_df <- left_join(grouped_nypd_tr, summarized_byBORO, by="Year") %>%
+              select(Year,BORO,shootings,TOTAL)
+mod <- lm(shootings ~ BORO + TOTAL, data = merged_df)
+predicted_nyc <- merged_df %>% ungroup() %>% mutate(pred = predict(mod))
+
+bronx_filter = predicted_nyc %>% filter(BORO=="BRONX")
+
+bronx_filter %>% 
+    ggplot() +
+    geom_point(aes(x=`Year`, y = shootings, color ="Observations")) +
+    geom_point(aes(x=`Year`, y = pred, color = "Predictions")) +
+    geom_line(aes(x=`Year`, y = shootings, color ="Observations")) +
+    geom_line(aes(x=`Year`, y = pred, color = "Predictions")) +
+    scale_color_manual(values=c("blue", "red"), name = "Shooting Events")
+
+hourMod <- lm(Prop_Shootings ~ Hour, data=nypd_perHour_prop_10)
+ggplot(nypd_perHour_prop_10, aes(x=Hour, y=Prop_Shootings)) +
+    geom_bar(stat="identity", aes(fill="Observation"), color="black") +
+    geom_line(aes(y=predict(hourMod), color="Prediction"), size=1) +
+    scale_color_manual(values=c("red")) +
+    scale_fill_manual(values=c("blue")) +
+    labs(title="%Shootings by Hour", x="Hour", y="Percentage of Shootings",
+         fill="", color="") +
+    theme(legend.position="bottom")
+
+```
+
+Our initial intuition was very close to the observed data. We based our model on total events and we assumed a constant proportion of events per borough. We can notice that the prediction line is following the observation line closely up until the last recorded data of 2021.
+
+## Bias Identification
+
+By looking at the different graphs and at the data, we could argue that the boroughs of Brooklyn and Bronx are the most dangerous and that Staten Island is the safest. However, we are not taking population into account in our study. Bronx and Brooklyn are the most populous boroughs in New York City. It would make sense that, everything else being equal, these regions have the highest number of incidents.
+A less biased and more informative study would've been to cross reference the populations of these boroughs and calculate a per capita rate instead.
+Moreover, the sudden increase in 2020 could lead to several misinterpretations. This period was greatly affected by the COVID pandemic and several social and societal issues were caused by it. These issues might have contributed to the rise of violence during that period of time. 
